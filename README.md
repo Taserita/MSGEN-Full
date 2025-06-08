@@ -5,4 +5,7 @@ Hierarchical Multi-Scale Molecular Conformer Generation with Structural Awarenes
 ## Overview
 This repository provides the implementation of our MSGEN framework
 
-![Illustration of the MSGEN framework with three stages.](Picture/Method.png)
+<p align="center">
+  <img src="Picture/Method.png" alt="Illustration of the MSGEN framework with three stages." width="600">
+</p>
+
