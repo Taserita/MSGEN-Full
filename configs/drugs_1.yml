@@ -1,5 +1,5 @@
 model:
-  type: diffusion # dsm and diffusion
+  type: diffusion
   network: dualenc
   hidden_dim: 128
   num_convs: 6

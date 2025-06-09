@@ -1,5 +1,5 @@
 model:
-  type: diffusion # dsm and diffusion
+  type: diffusion 
   network: dualenc
   hidden_dim: 128
   num_convs: 6
@@ -36,4 +36,3 @@ dataset:
   train: ./data/GEOM/QM9/train_data_40k.pkl
   val: ./data/GEOM/QM9/val_data_5k.pkl
   test: ./data/GEOM/QM9/test_data_1k.pkl
-# Use only edge_encoder_global & edge_condition_global
