@@ -19,12 +19,14 @@ conda activate MSGEN
 ```
 
 ## Dataset
-
+<!-- 
 ### Offical Dataset
 The offical raw GEOM dataset is avaiable [[here]](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/JNGTDF).
-
 ### Preprocessed dataset
-You can also use the prepocessed datasets (GEOM) from [[google drive folder]](https://drive.google.com/drive/folders/1b0kNBtck9VNrLRZxg6mckyVUpJA5rBHh?usp=sharing). After downleading the dataset, it should be put into the folder path as specified in the `dataset` variable of config files `./configs/*.yml`.
+-->
+
+
+We use the prepocessed datasets (GEOM) [[zenedo driver]](https://zenodo.org/records/15627485). After downleading the dataset, it should be put into the folder path as specified in the `dataset` variable of config files `./configs/*.yml`.
 
 <!-- 
 ### Prepare your own GEOM dataset from scratch (optional)
@@ -71,8 +73,7 @@ python eval_covmat.py ${log}/${model}/${sample}/sample_all.pkl
 
 ### Task 2. Property Prediction
 
-For the property prediction, we use a small split of qm9 different from the `Conformer Generation` task. This split is also provided in the [[google drive folder]](https://drive.google.com/drive/folders/1b0kNBtck9VNrLRZxg6mckyVUpJA5rBHh?usp=sharing) from GeoDiff.
-
+For the property prediction, we use the split provided in the [[zenedo driver]](https://zenodo.org/records/15627485).
 ```bash
 python test.py ${log}/${model}/checkpoints/${iter_stage1}.pt ${log}/${model}/checkpoints/${iter_stage2}.pt \       --num_confs 50 --start_idx 0 --test_set data/GEOM/QM9/qm9_property.pkl
 
