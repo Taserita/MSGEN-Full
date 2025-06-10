@@ -42,11 +42,11 @@ You can train the model with the following commands:
 
 ```bash
 # Default settings for stage 1
-python train.py ./config/qm9_1.yml
-python train.py ./config/drugs_1.yml
+python train_s1.py ./config/qm9_1.yml
+python train_s1.py ./config/drugs_1.yml
 # Default setting for stage 2 
-python train.py ./config/qm9_2.yml
-python train.py ./config/drugs_2.yml
+python train_s2.py ./config/qm9_2.yml
+python train_s2.py ./config/drugs_2.yml
 ```
 
 ## Generation
