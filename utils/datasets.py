@@ -17,6 +17,7 @@ from torch_scatter import scatter
 import rdkit
 from rdkit import Chem
 from rdkit.Chem.rdchem import Mol, HybridizationType, BondType
+from rdkit.Chem.Scaffolds import MurckoScaffold
 from rdkit import RDLogger
 import networkx as nx
 from tqdm import tqdm
@@ -1858,3 +1859,319 @@ class PackedCoarseDataset(CoarseConformationDataset):
 
     def __len__(self):
         return len(self.new_data)
+    
+
+
+########## 3-STAGE SETTING ###########
+
+# Stage 1
+class ScaffoldConformationDataset(Dataset):
+
+    def __init__(self, path, transform=None):
+        super().__init__()
+        with open(path, 'rb') as f:
+            self.original_data = pickle.load(f)
+
+        self.data = []
+        
+        # if length == None:
+        #     length = len(self.original_data)
+            
+        for data in self.original_data:
+            self.data.append(self.create_scaffold(data))
+
+        self.transform = transform
+        self.atom_types = self._atom_types()
+        self.edge_types = self._edge_types()
+
+    def __getitem__(self, idx):
+
+        data = self.data[idx].clone()
+        if self.transform is not None:
+            data = self.transform(data)        
+        return data
+
+    def __len__(self):
+        return len(self.data)
+
+        
+    def _atom_types(self):
+        """All atom types."""
+        atom_types = set()
+        for graph in self.data:
+            atom_types.update(graph.atom_type.tolist())
+        return sorted(atom_types)
+
+    def _edge_types(self):
+        """All edge types."""
+        edge_types = set()
+        for graph in self.data:
+            edge_types.update(graph.edge_type.tolist())
+        return sorted(edge_types) 
+
+    
+    def filter_edge_index(self, edge_index, edge_type, original_indices):
+        """
+        Filters edge_index to remove hydrogen-related edges and remaps indices.
+
+        Args:
+            edge_index (torch.Tensor): Original [2, num_edges] edge_index tensor.
+            edge_type (torch.Tensor): Edge type tensor corresponding to edge_index.
+            original_indices (torch.Tensor): Indices of non-hydrogen atoms.
+
+        Returns:
+            new_edge_index (torch.Tensor): Filtered and remapped edge_index.
+            new_edge_type (torch.Tensor): Filtered and remapped edge_type.
+        """
+        # create a mapping from old indices to new indices
+        index_map = {origin_idx.item(): i for i, origin_idx in enumerate(original_indices)}
+        # print(index_map)
+
+        # Filter edges: Keep only edges where both atoms exist in original_indices
+        mask = torch_isin(edge_index[0], original_indices) & (torch_isin(edge_index[1], original_indices))
+
+        
+        filtered_edge_index = edge_index[:, mask]
+        filter_edge_type = edge_type[mask]
+        # print(edge_index[:, mask])
+        # print(filter_edge_type)
+
+        # Remap old indices to new indices
+        new_edge_index = torch.tensor([
+            [index_map[int(idx)] for i, idx in enumerate(filtered_edge_index[0])],
+            [index_map[int(idx)] for i, idx in enumerate(filtered_edge_index[1])]
+            ], dtype = torch.long
+        )
+        return new_edge_index, filter_edge_type
+    
+    def create_scaffold(self, data):
+        """
+            Args:
+                data (torch.geometric.data.Data) : original data
+            
+            Returns:
+                new_data (torch.geometric.data.Data) : scaffold data
+        """
+
+        # Extract Scaffold idx
+        mol = data.rdmol
+        scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+
+        match = mol.GetSubstructMatch(scaffold)
+        I_scaf = torch.tensor(match, dtype=torch.long)
+
+        # Extract Chemical Properties
+        atom_type = data.atom_type[I_scaf]
+        pos = data.pos[I_scaf]
+        new_edge_index, filter_edge_type = self.filter_edge_index(data.edge_index, data.edge_type, I_scaf)
+
+        # Information
+        idx = data.idx
+        smiles = data.smiles
+
+        new_data = Data(
+            atom_type = atom_type,
+            edge_index = new_edge_index,
+            edge_type = filter_edge_type,
+            pos = pos,
+            idx = idx,
+            smiles = smiles,
+            rdmol = mol,
+            scaffold_idx = I_scaf
+        )
+
+        return new_data
+    
+
+class PackedScaffoldDataset(ScaffoldConformationDataset):
+
+    def __init__(self, path, transform=None):
+        super().__init__(path, transform)
+        #k:v = idx: data_obj
+        self._pack_data_by_mol()
+
+    def _pack_data_by_mol(self):
+        """
+        pack confs with same mol into a single data object
+        """
+        self._packed_data = defaultdict(list)
+        if hasattr(self.data, 'idx'):
+            for i in range(len(self.data)):
+                self._packed_data[self.data[i].idx.item()].append(self.data[i])
+        else:
+            for i in range(len(self.data)):
+                self._packed_data[self.data[i].smiles].append(self.data[i])
+        print('[Packed] %d Molecules, %d Conformations.' % (len(self._packed_data), len(self.data)))
+
+        new_data = []
+        # logic
+        # save graph structure for each mol once, but store all confs 
+        cnt = 0
+        for k, v in self._packed_data.items():
+            data = copy.deepcopy(v[0])
+            all_pos = []
+            for i in range(len(v)):
+                all_pos.append(v[i].pos)
+            data.pos_ref = torch.cat(all_pos, 0) # (num_conf*num_node, 3)
+            data.num_pos_ref = torch.tensor([len(all_pos)], dtype=torch.long)
+            #del data.pos
+
+            if hasattr(data, 'totalenergy'):
+                del data.totalenergy
+            if hasattr(data, 'boltzmannweight'):
+                del data.boltzmannweight
+            new_data.append(data)
+        self.new_data = new_data
+
+        
+
+    def __getitem__(self, idx):
+
+        data = self.new_data[idx].clone()
+        if self.transform is not None:
+            data = self.transform(data)        
+        return data
+
+    def __len__(self):
+        return len(self.new_data)
+    
+
+# Stage 2 with condition from Stage 1
+
+class BackboneConformationDataset(Dataset):
+
+    def __init__(self, path, transform=None):
+        super().__init__()
+        with open(path, 'rb') as f:
+            original_data = pickle.load(f)
+
+        self.data = [self.create_BackboneData(d) for d in original_data]
+
+        self.transform = transform
+        self.atom_types = self._atom_types()
+        self.edge_types = self._edge_types()
+
+    def __getitem__(self, idx):
+
+        data = self.data[idx].clone()
+        if self.transform is not None:
+            data = self.transform(data)        
+        return data
+
+    def __len__(self):
+        return len(self.data)
+
+    def _atom_types(self):
+        """All atom types."""
+        atom_types = set()
+        for graph in self.data:
+            atom_types.update(graph.atom_type.tolist())
+        return sorted(atom_types)
+
+    def _edge_types(self):
+        """All edge types."""
+        edge_types = set()
+        for graph in self.data:
+            edge_types.update(graph.edge_type.tolist())
+        return sorted(edge_types) 
+
+    def remove_hydrogen_atoms(self, atom_types):
+        """
+        Removes hydrogen atoms (atomic number = 1) from atom_types.
+        
+        Args:
+            atom_types (torch.Tensor): Tensor of atomic numbers including hydrogens.
+        
+        Returns:
+            coarse_type (torch.Tensor): Tensor of atomic numbers without hydrogen atoms.
+            coarse_I (torch.Tensor): Tensor of indices in the original atom list that correspond to heavy atoms.
+        """
+        mask = atom_types > 1  # Mask to keep only non-hydrogen atoms
+        coarse_type = atom_types[mask]  # Apply mask
+        coarse_I = torch.nonzero(mask, as_tuple=True)[0]
+
+        return coarse_type, coarse_I
+    
+    def filter_edge_index(self, edge_index, edge_type, coarse_I):
+        """
+        Filters edge_index to remove hydrogen-related edges and remaps indices.
+
+        Args:
+            edge_index (torch.Tensor): Original [2, num_edges] edge_index tensor.
+            edge_type (torch.Tensor): Edge type tensor corresponding to edge_index.
+            coarse_I: Indices of heavy atoms.
+
+        Returns:
+            new_edge_index (torch.Tensor): Filtered and remapped edge_index.
+            new_edge_type (torch.Tensor): Filtered and remapped edge_type.
+        """
+        # create a mapping from old indices to new indices
+        index_map = {origin_idx.item(): i for i, origin_idx in enumerate(coarse_I)}
+        # print(index_map)
+
+        # Filter edges: Keep only edges where both atoms exist in original_indices
+        mask = torch_isin(edge_index[0], coarse_I) & (torch_isin(edge_index[1], coarse_I))
+
+        
+        filtered_edge_index = edge_index[:, mask]
+        filter_edge_type = edge_type[mask]
+        # print(edge_index[:, mask])
+        # print(filter_edge_type)
+
+        # Remap old indices to new indices
+        new_edge_index = torch.tensor([
+            [index_map[int(idx)] for i, idx in enumerate(filtered_edge_index[0])],
+            [index_map[int(idx)] for i, idx in enumerate(filtered_edge_index[1])]
+            ], dtype = torch.long
+        )
+        return new_edge_index, filter_edge_type
+    
+    def create_BackboneData(self, data):
+        """
+            Args:
+                data (torch.geometric.data.Data) : original data
+            
+            Returns:
+                new_data (torch.geometric.data.Data) : Backbone data
+        """
+
+        coarse_type, coarse_I = self.remove_hydrogen_atoms(data.atom_type)
+        coarse_pos = data.pos[coarse_I]
+        new_edge_index, filter_edge_type = self.filter_edge_index(data.edge_index, data.edge_type, coarse_I)
+
+        """Chemical Properties"""
+        idx = data.idx
+        smiles = data.smiles
+        rdmol = data.rdmol
+
+        """Conditional Scaffold"""
+        scaffold = MurckoScaffold.GetScaffoldForMol(rdmol)
+        match = rdmol.GetSubstructMatch(scaffold)
+        Index = torch.tensor(match, dtype=torch.long) # in original full idx
+
+        val2idx = {v.item(): i for i, v in enumerate(coarse_I)}
+
+        scaf_I = torch.tensor([val2idx[v.item()] for v in Index], dtype=torch.long)
+
+        up_I = torch.arange(len(coarse_I), dtype=torch.long)
+        # rearrange the index of coarse graph to [0, len(I_coarse)-1]
+
+        scaffold_pos = coarse_pos[scaf_I]
+        # extract coarse pos
+
+        pos_guide = Chemical_upsampling(new_edge_index, scaf_I, up_I, scaffold_pos, len(coarse_type))
+        # data.condition = pos_guide
+
+        new_data = Data(
+                atom_type = coarse_type,
+                edge_index = new_edge_index,
+                edge_type = filter_edge_type,
+                pos = coarse_pos,
+                idx = idx, 
+                smiles = smiles,
+                rdmol = rdmol,
+                condition = pos_guide, 
+                orig_idx = coarse_I, # for upsampling
+                # scaf_I = scaf_I
+        )
+        return new_data
